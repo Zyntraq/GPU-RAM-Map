@@ -1,5 +1,7 @@
 # GPU VRAM Map
 
+A simple app to show GPU VRAM usage by app, separated by GPU for multi-GPU systems.
+
 Double-click **GPU-VRAM-Map.exe**. This is a portable 64-bit C++ Windows app; no installer or extra runtime files are needed.
 
 Select a GPU by name in the dropdown. The table shows **only that GPU's** process memory usage and refreshes every two seconds by default. It shows process names, PIDs, **VRAM / local** and **RAM / non-local** memory, in KiB. The row below the list totals each memory column for the listed processes on the selected GPU. Click any column heading to sort; click it again to reverse the order. The initial sort is highest local memory first, and your chosen sort stays active when changing GPUs. Changing the GPU immediately filters the latest sample and requests a fresh reading. Zero-use processes are omitted. Change the number in "Refreshes every [2] seconds" at the bottom to set the interval (1-3600 whole seconds); invalid entries retain the last valid interval. Resize the window or scroll to see more rows.
