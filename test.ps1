@@ -16,7 +16,7 @@ try {
         }
         return $values
     }
-    $inventory = Start-Process .\GPU-VRAM-Usage.exe -ArgumentList '--adapters tests\adapters.csv' -WindowStyle Hidden -Wait -PassThru
+    $inventory = Start-Process .\GPU-VRAM-Map.exe -ArgumentList '--adapters tests\adapters.csv' -WindowStyle Hidden -Wait -PassThru
     if ($inventory.ExitCode -ne 0) { throw 'Adapter enumeration failed.' }
     $adapters = @(Import-Csv tests\adapters.csv)
     $stable = 0
@@ -25,7 +25,7 @@ try {
     foreach ($adapter in $adapters) {
         $before = Get-GpuSample
         $output = "tests\comparison-$($adapter.AdapterId).csv"
-        $app = Start-Process .\GPU-VRAM-Usage.exe -ArgumentList "--snapshot $output --gpu $($adapter.AdapterId)" -WindowStyle Hidden -Wait -PassThru
+        $app = Start-Process .\GPU-VRAM-Map.exe -ArgumentList "--snapshot $output --gpu $($adapter.AdapterId)" -WindowStyle Hidden -Wait -PassThru
         if ($app.ExitCode -ne 0) { throw "Snapshot failed for $($adapter.Name)." }
         $after = Get-GpuSample
         $rows = @(Import-Csv $output)
@@ -59,9 +59,9 @@ try {
         $adapterReports += "$($adapter.Name): $($rows.Count) process rows"
     }
     if ($stable -lt 5) { throw 'Too few stable counter readings to verify; rerun with less GPU activity.' }
-    $bad = Start-Process .\GPU-VRAM-Usage.exe -ArgumentList '--snapshot tests\invalid-gpu.csv --gpu ffffffffffffffff' -WindowStyle Hidden -Wait -PassThru
+    $bad = Start-Process .\GPU-VRAM-Map.exe -ArgumentList '--snapshot tests\invalid-gpu.csv --gpu ffffffffffffffff' -WindowStyle Hidden -Wait -PassThru
     if ($bad.ExitCode -eq 0) { throw 'Invalid adapter was accepted.' }
-    $ui = Start-Process .\GPU-VRAM-Usage.exe -ArgumentList '--ui-test tests\gui-test.txt' -WindowStyle Hidden -Wait -PassThru
+    $ui = Start-Process .\GPU-VRAM-Map.exe -ArgumentList '--ui-test tests\gui-test.txt' -WindowStyle Hidden -Wait -PassThru
     if ($ui.ExitCode -ne 0) { throw (Get-Content tests\gui-test.txt -Raw) }
     Add-Type -AssemblyName System.Drawing
     foreach ($capture in (Get-ChildItem tests\gui-test.txt*.bmp)) {
