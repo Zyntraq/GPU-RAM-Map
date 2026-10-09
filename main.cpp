@@ -182,11 +182,14 @@ static bool writeCsv(const std::wstring& path, const Snapshot& snapshot) {
     }
     return static_cast<bool>(file);
 }
-static std::wstring mib(uint64_t bytes) {
-    std::wostringstream text; text << std::fixed << std::setprecision(2) << (bytes / 1048576.0); return text.str();
+static std::wstring memoryKiB(uint64_t bytes) {
+    std::wstring digits = std::to_wstring(bytes / 1024);
+    for (int position = static_cast<int>(digits.size()) - 3; position > 0; position -= 3)
+        digits.insert(position, L",");
+    return digits;
 }
 
-static HWND windowHandle, table, statusLabel, description, refreshButton, gpuLabel, gpuDropdown;
+static HWND windowHandle, table, statusLabel, intervalLabel, intervalEdit, secondsLabel, gpuLabel, gpuDropdown;
 static uint64_t totalLocalBytes = 0, totalNonLocalBytes = 0;
 static bool totalsAvailable = false;
 static HFONT font;
@@ -200,7 +203,11 @@ static bool pending = false;
 static std::wstring testReport;
 static bool testFixture = false;
 static int testSamples = 0, exitResult = 0;
-static constexpr UINT refreshId = 100;
+static constexpr UINT intervalId = 100;
+static std::atomic<DWORD> refreshMilliseconds{2000};
+static std::atomic<bool> intervalChanged{false};
+static std::atomic<ULONGLONG> sampleSpacing{0};
+static int timingStage = 0;
 static constexpr UINT gpuId = 101;
 
 // Capture this application's own window for visual verification in --ui-test mode.
@@ -233,12 +240,13 @@ static bool captureWindow(const std::wstring& path) {
 }
 static void layout() {
     RECT r; GetClientRect(windowHandle, &r);
-    MoveWindow(description, 16, 20, r.right - 148, 24, TRUE);
-    MoveWindow(refreshButton, r.right - 116, 16, 100, 30, TRUE);
-    MoveWindow(gpuLabel, 16, 59, 40, 24, TRUE);
-    MoveWindow(gpuDropdown, 58, 53, r.right - 74, 220, TRUE);
-    MoveWindow(table, 16, 92, r.right - 32, r.bottom - 206, TRUE);
-    MoveWindow(statusLabel, 16, r.bottom - 76, r.right - 32, 66, TRUE);
+    MoveWindow(gpuLabel, 16, 22, 40, 24, TRUE);
+    MoveWindow(gpuDropdown, 58, 16, r.right - 74, 220, TRUE);
+    MoveWindow(table, 16, 55, r.right - 32, r.bottom - 169, TRUE);
+    MoveWindow(statusLabel, 16, r.bottom - 76, r.right - 32, 42, TRUE);
+    MoveWindow(intervalLabel, 16, r.bottom - 29, 94, 22, TRUE);
+    MoveWindow(intervalEdit, 112, r.bottom - 33, 54, 24, TRUE);
+    MoveWindow(secondsLabel, 172, r.bottom - 29, 70, 22, TRUE);
     ListView_SetColumnWidth(table, 0, std::max(210L, r.right - 32 - 80 - 170 - 180 - GetSystemMetrics(SM_CXVSCROLL) - 4));
     RECT band{16, r.bottom - 108, r.right - 16, r.bottom - 82};
     InvalidateRect(windowHandle, &band, TRUE);
@@ -262,7 +270,7 @@ static void drawTotals(HDC dc) {
         area.top = band.top; area.bottom = band.bottom; area.right -= 8;
         RECT clipped{};
         if (!IntersectRect(&clipped, &area, &band)) continue;
-        std::wstring value = totalsAvailable ? mib(column == 2 ? totalLocalBytes : totalNonLocalBytes) : L"--";
+        std::wstring value = totalsAvailable ? memoryKiB(column == 2 ? totalLocalBytes : totalNonLocalBytes) : L"--";
         DrawTextW(dc, value.c_str(), -1, &clipped, DT_RIGHT | DT_VCENTER | DT_SINGLELINE);
     }
     SelectObject(dc, oldFont);
@@ -286,7 +294,7 @@ static void displaySnapshot(const Snapshot& snapshot) {
         LVITEMW item{}; item.mask = LVIF_TEXT | LVIF_PARAM; item.iItem = static_cast<int>(i);
         item.pszText = const_cast<wchar_t*>(row.name.c_str()); item.lParam = row.pid;
         ListView_InsertItem(table, &item);
-        std::wstring columns[] = {std::to_wstring(row.pid), mib(row.localBytes), mib(row.nonLocalBytes)};
+        std::wstring columns[] = {std::to_wstring(row.pid), memoryKiB(row.localBytes), memoryKiB(row.nonLocalBytes)};
         for (int column = 1; column <= 3; ++column) ListView_SetItemText(table, static_cast<int>(i), column, columns[column - 1].data());
         if (selectedPid == row.pid) ListView_SetItemState(table, static_cast<int>(i), LVIS_SELECTED, LVIS_SELECTED);
     }
@@ -300,7 +308,7 @@ static void displaySnapshot(const Snapshot& snapshot) {
     else {
         SYSTEMTIME time; GetLocalTime(&time); wchar_t timestamp[24];
         swprintf(timestamp, 24, L"%02u:%02u:%02u", time.wHour, time.wMinute, time.wSecond);
-        text = std::to_wstring(snapshot.rows.size()) + L" processes | Updated " + timestamp + L" | Refreshes every 2 seconds";
+        text = std::to_wstring(snapshot.rows.size()) + L" processes | Updated " + timestamp;
         if (snapshot.rows.empty()) text += L" | No GPU memory usage reported";
         if (snapshot.skipped) text += L" | Some counter samples unavailable";
         text += L"\r\nSelected GPU only. Local = VRAM on discrete GPUs; system RAM on integrated GPUs. Process values are not additive.";
@@ -316,8 +324,8 @@ static bool tableMatches(const Snapshot& sample) {
         LVITEMW item{}; item.mask = LVIF_PARAM; item.iItem = static_cast<int>(i); ListView_GetItem(table, &item);
         if (static_cast<DWORD>(item.lParam) != row.pid) return false;
         ListView_GetItemText(table, static_cast<int>(i), 0, text, 256); if (text != row.name) return false;
-        ListView_GetItemText(table, static_cast<int>(i), 2, text, 256); if (text != mib(row.localBytes)) return false;
-        ListView_GetItemText(table, static_cast<int>(i), 3, text, 256); if (text != mib(row.nonLocalBytes)) return false;
+        ListView_GetItemText(table, static_cast<int>(i), 2, text, 256); if (text != memoryKiB(row.localBytes)) return false;
+        ListView_GetItemText(table, static_cast<int>(i), 3, text, 256); if (text != memoryKiB(row.nonLocalBytes)) return false;
     }
     uint64_t local = 0, nonLocal = 0;
     for (const auto& row : sample.rows) { local += row.localBytes; nonLocal += row.nonLocalBytes; }
@@ -339,8 +347,10 @@ static LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wp, LPARAM lp
         windowHandle = hwnd;
         NONCLIENTMETRICSW metrics{}; metrics.cbSize = sizeof(metrics); SystemParametersInfoW(SPI_GETNONCLIENTMETRICS, sizeof(metrics), &metrics, 0);
         font = CreateFontIndirectW(&metrics.lfMessageFont);
-        description = CreateWindowW(L"STATIC", L"Memory shown in MiB (1 MiB = 1,048,576 bytes)", WS_CHILD | WS_VISIBLE, 0,0,0,0, hwnd, nullptr, nullptr, nullptr);
-        refreshButton = CreateWindowW(L"BUTTON", L"Refresh", WS_CHILD | WS_VISIBLE | WS_TABSTOP, 0,0,0,0, hwnd, reinterpret_cast<HMENU>(refreshId), nullptr, nullptr);
+        intervalLabel = CreateWindowW(L"STATIC", L"Refreshes every", WS_CHILD | WS_VISIBLE, 0,0,0,0, hwnd, nullptr, nullptr, nullptr);
+        intervalEdit = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"2", WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_NUMBER | ES_AUTOHSCROLL, 0,0,0,0, hwnd, reinterpret_cast<HMENU>(intervalId), nullptr, nullptr);
+        SendMessageW(intervalEdit, EM_SETLIMITTEXT, 4, 0);
+        secondsLabel = CreateWindowW(L"STATIC", L"seconds", WS_CHILD | WS_VISIBLE, 0,0,0,0, hwnd, nullptr, nullptr, nullptr);
         gpuLabel = CreateWindowW(L"STATIC", L"GPU:", WS_CHILD | WS_VISIBLE, 0,0,0,0, hwnd, nullptr, nullptr, nullptr);
         gpuDropdown = CreateWindowW(L"COMBOBOX", L"", WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_VSCROLL | CBS_DROPDOWNLIST, 0,0,0,0, hwnd, reinterpret_cast<HMENU>(gpuId), nullptr, nullptr);
         for (const auto& adapter : adapters) SendMessageW(gpuDropdown, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(adapter.name.c_str()));
@@ -348,8 +358,8 @@ static LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wp, LPARAM lp
         statusLabel = CreateWindowW(L"STATIC", L"Reading GPU memory counters...", WS_CHILD | WS_VISIBLE, 0,0,0,0, hwnd, nullptr, nullptr, nullptr);
         table = CreateWindowExW(WS_EX_CLIENTEDGE, WC_LISTVIEWW, L"", WS_CHILD | WS_VISIBLE | WS_TABSTOP | LVS_REPORT | LVS_SHOWSELALWAYS | LVS_SINGLESEL, 0,0,0,0, hwnd, nullptr, nullptr, nullptr);
         ListView_SetExtendedListViewStyle(table, LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER | LVS_EX_GRIDLINES);
-        for (HWND control : {description, refreshButton, statusLabel, table, gpuLabel, gpuDropdown}) SendMessageW(control, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
-        const wchar_t* labels[] = {L"Process", L"PID", L"VRAM / local (MiB)", L"RAM / non-local (MiB)"};
+        for (HWND control : {intervalLabel, intervalEdit, secondsLabel, statusLabel, table, gpuLabel, gpuDropdown}) SendMessageW(control, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
+        const wchar_t* labels[] = {L"Process", L"PID", L"VRAM / local (KiB)", L"RAM / non-local (KiB)"};
         int widths[] = {390, 80, 170, 180};
         for (int i = 0; i < 4; ++i) { LVCOLUMNW c{}; c.mask = LVCF_TEXT | LVCF_WIDTH | LVCF_FMT; c.pszText = const_cast<wchar_t*>(labels[i]); c.cx = widths[i]; c.fmt = i ? LVCFMT_RIGHT : LVCFMT_LEFT; ListView_InsertColumn(table, i, &c); }
         updateSortIndicator();
@@ -358,7 +368,11 @@ static LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wp, LPARAM lp
         worker = std::thread([] {
             GpuCounters counters;
             unsigned fixtureStep = 0;
+            ULONGLONG previousSample = 0;
             while (!stopping) {
+                ULONGLONG now = GetTickCount64();
+                if (previousSample) sampleSpacing = now - previousSample;
+                previousSample = now;
                 Snapshot sample;
                 if (testFixture) {
                     ++fixtureStep;
@@ -369,7 +383,11 @@ static LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wp, LPARAM lp
                     if (adapters.size() > 1) sample.rows.push_back(Row{103, L"ExampleC.exe", 3 * 1048576ULL, 7 * 1048576ULL, adapters[1].id});
                 } else sample = counters.sample();
                 { std::lock_guard<std::mutex> lock(resultMutex); latest = std::move(sample); pending = true; }
-                WaitForSingleObject(wakeEvent, 2000);
+                do {
+                    DWORD result = WaitForSingleObject(wakeEvent, refreshMilliseconds.load());
+                    if (stopping || result == WAIT_TIMEOUT || !intervalChanged.exchange(false)) break;
+                    // Restart the wait with the new interval without sampling immediately.
+                } while (!stopping);
             }
         });
         SetTimer(hwnd, 1, 100, nullptr);
@@ -402,7 +420,18 @@ static LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wp, LPARAM lp
         return DefWindowProcW(hwnd, message, wp, lp);
     }
     case WM_COMMAND:
-        if (LOWORD(wp) == refreshId && wakeEvent) SetEvent(wakeEvent);
+        if (LOWORD(wp) == intervalId && HIWORD(wp) == EN_CHANGE) {
+            wchar_t text[32]; GetWindowTextW(intervalEdit, text, 32);
+            wchar_t* end = nullptr; unsigned long seconds = wcstoul(text, &end, 10);
+            if (end != text && !*end && seconds >= 1 && seconds <= 3600) {
+                if (refreshMilliseconds.exchange(seconds * 1000) != seconds * 1000) {
+                    intervalChanged = true;
+                    if (wakeEvent) SetEvent(wakeEvent);
+                }
+            }
+        }
+        if (LOWORD(wp) == intervalId && HIWORD(wp) == EN_KILLFOCUS)
+            SetWindowTextW(intervalEdit, std::to_wstring(refreshMilliseconds.load() / 1000).c_str());
         if (LOWORD(wp) == gpuId && HIWORD(wp) == CBN_SELCHANGE) {
             LRESULT index = SendMessageW(gpuDropdown, CB_GETCURSEL, 0, 0);
             if (index >= 0 && static_cast<size_t>(index) < adapters.size()) {
@@ -421,8 +450,28 @@ static LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wp, LPARAM lp
         // Performance counters can expose virtual/unmapped adapter LUIDs. Only
         // DXGI-enumerated hardware adapters are offered in the GPU selector.
         displaySnapshot(forGpu(sample, selectedGpu));
+        if (!testReport.empty() && timingStage) {
+            ULONGLONG spacing = sampleSpacing.load();
+            DWORD expected = timingStage == 1 ? 1000 : 3000;
+            // GPU-switch requests may already have queued a sample before the interval edit.
+            if (spacing < 200) return 0;
+            if (spacing < expected - 200 || spacing > expected + 700) {
+                std::ofstream f{std::filesystem::path(testReport)};
+                f << "FAIL: refresh interval " << expected << "ms; observed " << spacing << "ms\n";
+                exitResult = 1; DestroyWindow(hwnd); return 0;
+            }
+            if (timingStage == 1) { timingStage = 2; SetWindowTextW(intervalEdit, L"3"); return 0; }
+            SetWindowTextW(intervalEdit, L"2");
+            RedrawWindow(hwnd, nullptr, nullptr, RDW_UPDATENOW | RDW_ALLCHILDREN | RDW_INVALIDATE);
+            bool captured = captureWindow(testReport + L".bmp");
+            std::ofstream f{std::filesystem::path(testReport)};
+            f << "PASS: GPU filtering, sorting, KiB values, totals and resize; editable interval measured at 1 and 3 seconds; capture=" << captured << '\n';
+            exitResult = captured ? 0 : 1; DestroyWindow(hwnd); return 0;
+        }
         if (!testReport.empty()) {
-            bool ok = !adapters.empty() && !sample.rows.empty() &&
+            bool ok = memoryKiB(1024) == L"1" && memoryKiB(1048576) == L"1,024" &&
+                memoryKiB(540127232) == L"527,468" && memoryKiB(1023) == L"0" &&
+                !adapters.empty() && !sample.rows.empty() &&
                 SendMessageW(gpuDropdown, CB_GETCOUNT, 0, 0) == static_cast<LRESULT>(adapters.size());
             LRESULT original = SendMessageW(gpuDropdown, CB_GETCURSEL, 0, 0);
             for (size_t i = 0; i < adapters.size() && ok; ++i) {
@@ -463,12 +512,11 @@ static LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wp, LPARAM lp
             }
             if (!ok) { std::ofstream f{std::filesystem::path(testReport)}; f << "FAIL: live GUI rows or counters invalid: " << utf8(sample.error) << '\n'; exitResult = 1; DestroyWindow(hwnd); }
             else if (++testSamples >= 3) {
-                RedrawWindow(hwnd, nullptr, nullptr, RDW_UPDATENOW | RDW_ALLCHILDREN | RDW_INVALIDATE);
-                bool captured = captureWindow(testReport + L".bmp");
-                std::ofstream f{std::filesystem::path(testReport)};
-                f << "PASS: 3 " << (testFixture ? "fixture" : "live") << " GUI updates; switched through " << adapters.size() << " GPUs on every update; selected-GPU rows and both memory totals match sampled rows; all four column sorts in both directions, sort retained across GPU switching, sort arrows, names, values and PIDs verified; manual refresh and resize exercised; capture=" << captured << '\n';
-                exitResult = captured ? 0 : 1; DestroyWindow(hwnd);
-            } else if (testSamples == 1) { SetWindowPos(hwnd, nullptr, 0, 0, 940, 560, SWP_NOMOVE | SWP_NOZORDER); SendMessageW(hwnd, WM_COMMAND, refreshId, 0); }
+                ResetEvent(wakeEvent);
+                timingStage = 1;
+                SetWindowTextW(intervalEdit, L"1");
+            } else if (testSamples == 1) { SetWindowPos(hwnd, nullptr, 0, 0, 940, 560, SWP_NOMOVE | SWP_NOZORDER); }
+
         }
         return 0;
     }
@@ -510,15 +558,15 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
     if (argc == 3 && (std::wstring(argv[1]) == L"--ui-test" || std::wstring(argv[1]) == L"--ui-test-fixture")) {
         testReport = argv[2]; testFixture = std::wstring(argv[1]) == L"--ui-test-fixture";
     }
-    else if (argc != 1) { LocalFree(argv); MessageBoxW(nullptr, L"Double-click to open. Optional: --snapshot output.csv [--gpu adapter-id], --adapters adapters.csv, or --ui-test report.txt", L"GPU VRAM Usage", MB_ICONINFORMATION); return 1; }
+    else if (argc != 1) { LocalFree(argv); MessageBoxW(nullptr, L"Double-click to open. Optional: --snapshot output.csv [--gpu adapter-id], --adapters adapters.csv, or --ui-test report.txt", L"GPU VRAM Map", MB_ICONINFORMATION); return 1; }
     LocalFree(argv);
     SetProcessDPIAware();
     INITCOMMONCONTROLSEX controls{sizeof(controls), ICC_LISTVIEW_CLASSES}; InitCommonControlsEx(&controls);
     WNDCLASSW cls{}; cls.lpfnWndProc = windowProc; cls.hInstance = instance;
     cls.hCursor = LoadCursorW(nullptr, IDC_ARROW); cls.hIcon = LoadIconW(nullptr, IDI_APPLICATION);
-    cls.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1); cls.lpszClassName = L"GpuVramUsageWindow";
+    cls.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1); cls.lpszClassName = L"GpuVramMapWindow";
     if (!RegisterClassW(&cls)) return 1;
-    HWND hwnd = CreateWindowW(cls.lpszClassName, L"GPU VRAM Usage", WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT, 920, 600, nullptr, nullptr, instance, nullptr);
+    HWND hwnd = CreateWindowW(cls.lpszClassName, L"GPU VRAM Map", WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT, 920, 600, nullptr, nullptr, instance, nullptr);
     if (!hwnd) return 1;
     ShowWindow(hwnd, testReport.empty() ? show : SW_SHOWNORMAL);
     // The first ShowWindow may be overridden by STARTUPINFO (e.g. a test runner).

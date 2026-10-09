@@ -1,8 +1,10 @@
-# GPU RAM Map
+# GPU VRAM Map
 
-Double-click **GPU-VRAM-Usage.exe**. This is a portable 64-bit C++ Windows app; no installer or extra runtime files are needed.
+Double-click **GPU-VRAM-Map.exe**. This is a portable 64-bit C++ Windows app; no installer or extra runtime files are needed.
 
-Select a GPU by name in the dropdown. The table shows **only that GPU's** process memory usage and refreshes every two seconds. It shows process names, PIDs, **VRAM / local** and **RAM / non-local** memory, in MiB. The row below the list totals each memory column for the listed processes on the selected GPU. Click any column heading to sort; click it again to reverse the order. The initial sort is highest local memory first, and your chosen sort stays active when changing GPUs. Changing the GPU immediately filters the latest sample and requests a fresh reading. Zero-use processes are omitted. Click Refresh for an immediate sample. Resize the window or scroll to see more rows.
+Select a GPU by name in the dropdown. The table shows **only that GPU's** process memory usage and refreshes every two seconds by default. It shows process names, PIDs, **VRAM / local** and **RAM / non-local** memory, in KiB. The row below the list totals each memory column for the listed processes on the selected GPU. Click any column heading to sort; click it again to reverse the order. The initial sort is highest local memory first, and your chosen sort stays active when changing GPUs. Changing the GPU immediately filters the latest sample and requests a fresh reading. Zero-use processes are omitted. Change the number in "Refreshes every [2] seconds" at the bottom to set the interval (1-3600 whole seconds); invalid entries retain the last valid interval. Resize the window or scroll to see more rows.
+
+KiB (kibibytes) uses 1,024 bytes per unit, matching the values labeled K in Task Manager's Details view. Rows and totals show whole numbers with thousands separators; totals are calculated from exact bytes before conversion.
 
 ## Requirements and interpretation
 
@@ -32,11 +34,11 @@ Run `powershell -ExecutionPolicy Bypass -File .\test.ps1` to compare the app wit
 If Windows' performance-counter API is temporarily unavailable, `--ui-test-fixture report.txt` tests the real window with changing sample values across available GPUs, including both total columns, sorting, refresh, and resizing. This fixture check does not validate live GPU readings.
 
 ```powershell
-Start-Process .\GPU-VRAM-Usage.exe -ArgumentList '--snapshot snapshot.csv' -Wait
-Start-Process .\GPU-VRAM-Usage.exe -ArgumentList '--adapters adapters.csv' -Wait
+Start-Process .\GPU-VRAM-Map.exe -ArgumentList '--snapshot snapshot.csv' -Wait
+Start-Process .\GPU-VRAM-Map.exe -ArgumentList '--adapters adapters.csv' -Wait
 # Use an AdapterId from adapters.csv to request a specific GPU:
-Start-Process .\GPU-VRAM-Usage.exe -ArgumentList '--snapshot snapshot.csv --gpu 0000000000011b4f' -Wait
-Start-Process .\GPU-VRAM-Usage.exe -ArgumentList '--ui-test gui-test.txt' -Wait
+Start-Process .\GPU-VRAM-Map.exe -ArgumentList '--snapshot snapshot.csv --gpu 0000000000011b4f' -Wait
+Start-Process .\GPU-VRAM-Map.exe -ArgumentList '--ui-test gui-test.txt' -Wait
 ```
 
-Snapshot mode defaults to the first adapter and writes UTF-8 CSV with exact byte counts in `LocalBytes` and `NonLocalBytes`, plus `AdapterId`. Adapter identifiers can change after reboot. UI test mode opens the real window, checks three live updates, switches through every GPU, verifies filtered names, values, PIDs, descending sort and empty lists, exercises resize and manual refresh, saves client-area BMPs, then closes. Exit code 0 means success; 1 means failure. Output paths are relative to the current working directory unless absolute paths are supplied. Restart the app after adding/removing hardware to refresh adapter names.
+Snapshot mode defaults to the first adapter and writes UTF-8 CSV with exact byte counts in `LocalBytes` and `NonLocalBytes`, plus `AdapterId`. Adapter identifiers can change after reboot. UI test mode opens the real window, checks three live updates, switches through every GPU, verifies filtered names, values, PIDs, descending sort and empty lists, exercises resize and editable refresh timing, saves client-area BMPs, then closes. Exit code 0 means success; 1 means failure. Output paths are relative to the current working directory unless absolute paths are supplied. Restart the app after adding/removing hardware to refresh adapter names.
